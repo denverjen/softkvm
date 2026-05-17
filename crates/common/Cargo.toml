@@ -1,0 +1,11 @@
+[package]
+name = "softkvm-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+toml = "0.8"
+tracing = { workspace = true }
+anyhow = { workspace = true }
+softkvm-protocol = { path = "../protocol" }

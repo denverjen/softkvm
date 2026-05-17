@@ -1,0 +1,17 @@
+[server]
+listen = "0.0.0.0"
+port = 24800
+
+[client]
+host = "192.168.1.100"
+port = 24800
+
+[layout]
+position = "left-right"
+
+[clipboard]
+enabled = true
+max_size = 1048576
+
+[security]
+tls = false

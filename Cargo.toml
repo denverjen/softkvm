@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/protocol",
+    "crates/server",
+    "crates/client",
+    "crates/common",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+bytes = "1"
