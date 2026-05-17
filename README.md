@@ -48,12 +48,205 @@ A software KVM (Keyboard, Video, Mouse) switch that lets you share a single keyb
 
 ## Requirements
 
-| Component | Windows | Linux |
-|-----------|---------|-------|
-| **Server** | Windows 10 or 11 | Ubuntu 20.04+ with read access to `/dev/input/` |
-| **Client** | Windows 10 or 11 | Ubuntu 20.04+ with `uinput` kernel module |
-| **Network** | LAN between both machines | LAN between both machines |
-| **Runtime** | Single static binary | Single binary (udev rules recommended) |
+### Hardware
+
+- Two machines connected to the **same local network (LAN)**
+- Keyboard and mouse physically connected to the **Server** machine
+- A display on each machine
+
+### Operating System
+
+| Machine | Minimum OS |
+|---------|-----------|
+| Server (Windows) | Windows 10 (Build 1903+) or Windows 11 |
+| Server (Linux) | Ubuntu 20.04 LTS or later (kernel 5.4+) |
+| Client (Windows) | Windows 10 (Build 1903+) or Windows 11 |
+| Client (Linux) | Ubuntu 20.04 LTS or later (kernel 5.4+) |
+
+### Network
+
+- Both machines on the same LAN (Ethernet or Wi-Fi)
+- TCP port **24800** open between machines (configurable)
+- Recommended: Gigabit Ethernet for lowest latency
+
+## Installation
+
+### Download Pre-built Binaries (Recommended)
+
+Download from the [Latest Release](https://github.com/denverjen/softkvm/releases/latest):
+
+| File | Platform | Role |
+|------|----------|------|
+| `softkvm-server-linux-x86_64` | Linux x86_64 | Server |
+| `softkvm-client-linux-x86_64` | Linux x86_64 | Client |
+| `softkvm-server-windows-x86_64.exe` | Windows 10/11 x86_64 | Server |
+| `softkvm-client-windows-x86_64.exe` | Windows 10/11 x86_64 | Client |
+
+### Windows Setup
+
+**No pre-installed packages required.** The binaries are standalone executables.
+
+1. Download `softkvm-server-windows-x86_64.exe` and/or `softkvm-client-windows-x86_64.exe`
+2. Place them in any folder (e.g. `C:\SoftKVM\`)
+3. Run from PowerShell or Command Prompt:
+   ```
+   softkvm-server-windows-x86_64.exe
+   ```
+
+> **Note:** Windows Defender or antivirus may flag the binary on first run. Click "More info" → "Run anyway" to proceed.
+
+### Linux Setup
+
+#### Prerequisites
+
+```bash
+# Install xclip (required for clipboard sharing)
+sudo apt-get update
+sudo apt-get install -y xclip
+
+# Verify uinput kernel module is loaded (required for client)
+sudo modprobe uinput
+lsmod | grep uinput
+```
+
+#### Install
+
+```bash
+# Download
+wget https://github.com/denverjen/softkvm/releases/latest/download/softkvm-server-linux-x86_64
+wget https://github.com/denverjen/softkvm/releases/latest/download/softkvm-client-linux-x86_64
+
+# Make executable
+chmod +x softkvm-server-linux-x86_64 softkvm-client-linux-x86_64
+```
+
+#### Permissions Setup (Required for Client)
+
+The client needs access to `/dev/uinput` to create virtual input devices. Run **one** of these options:
+
+**Option A: Udev rule (recommended, persistent)**
+```bash
+echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+sudo usermod -aG input $USER
+# Log out and log back in for group change to take effect
+```
+
+**Option B: Run with sudo (quick test)**
+```bash
+sudo ./softkvm-client-linux-x86_64
+```
+
+#### Permissions Setup (Required for Server on Linux)
+
+The server needs read access to `/dev/input/event*` devices:
+
+```bash
+sudo usermod -aG input $USER
+# Log out and log back in for group change to take effect
+```
+
+Verify access:
+```bash
+ls -l /dev/input/
+# You should see "input" group on event devices
+groups $USER
+# "input" should be listed
+```
+
+## Quick Start
+
+### 1. Find your IP addresses
+
+**On the Server machine:**
+```bash
+# Linux
+ip addr show | grep "inet "
+# Windows (PowerShell)
+ipconfig | findstr "IPv4"
+```
+
+### 2. Create a config file
+
+Create `softkvm.toml` on both machines:
+
+```toml
+[server]
+listen = "0.0.0.0"
+port = 24800
+
+[client]
+host = "192.168.1.100"   # Replace with your SERVER IP
+port = 24800
+
+[layout]
+position = "left-right"  # Client is to the right of Server
+
+[clipboard]
+enabled = true
+max_size = 1048576
+
+[security]
+tls = false
+```
+
+### 3. Start the Server
+
+**Windows:**
+```powershell
+softkvm-server-windows-x86_64.exe
+```
+
+**Linux:**
+```bash
+./softkvm-server-linux-x86_64
+```
+
+### 4. Start the Client
+
+**Windows:**
+```powershell
+softkvm-client-windows-x86_64.exe
+```
+
+**Linux:**
+```bash
+# If udev rules are set up:
+./softkvm-client-linux-x86_64
+
+# Otherwise:
+sudo ./softkvm-client-linux-x86_64
+```
+
+### 5. Verify connection
+
+You should see log output like:
+```
+INFO SoftKVM Server starting on 0.0.0.0:24800
+INFO Listening on 0.0.0.0:24800
+INFO Client connected from 192.168.1.101
+```
+
+```
+INFO SoftKVM Client connecting to 192.168.1.100:24800
+INFO Connected to server
+```
+
+Move your mouse to the right edge of the server screen — it should appear on the client screen.
+
+## Troubleshooting
+
+| Problem | Platform | Solution |
+|---------|----------|----------|
+| "No input devices found" | Linux Server | Run `sudo usermod -aG input $USER` and re-login |
+| "Failed to create input injector" | Linux Client | Run `sudo modprobe uinput` |
+| "Permission denied /dev/uinput" | Linux Client | Set up udev rules or run with `sudo` |
+| Client can't connect | Both | Check firewall allows TCP port 24800 |
+| Mouse doesn't cross edge | Both | Verify `layout.position` matches physical screen arrangement |
+| Clipboard not syncing | Linux | Install `xclip`: `sudo apt install xclip` |
+| High latency | Both | Use Ethernet instead of Wi-Fi; check network quality |
+| Windows SmartScreen block | Windows | Click "More info" → "Run anyway" |
 
 ## Project Structure
 
@@ -171,102 +364,45 @@ Supported layouts:
 
 ## Configuration
 
-Configuration is stored in `softkvm.toml`:
+Configuration is stored in `softkvm.toml`. See [Quick Start](#quick-start) for a complete example.
 
-```toml
-[server]
-# IP address to listen on (0.0.0.0 = all interfaces)
-listen = "0.0.0.0"
-# Port number
-port = 24800
+### Layout Options
 
-[client]
-# Server IP address to connect to
-host = "192.168.1.100"
-# Server port
-port = 24800
+| Value | Description |
+|-------|-------------|
+| `left-right` | Client is to the right of Server (default) |
+| `right-left` | Client is to the left of Server |
+| `top-bottom` | Client is below Server |
+| `bottom-top` | Client is above Server |
 
-[layout]
-# How the client screen is positioned relative to the server
-position = "left-right"  # left-right | right-left | top-bottom | bottom-top
+## Build from Source
 
-[clipboard]
-# Enable clipboard sharing
-enabled = true
-# Maximum clipboard size in bytes (default 1MB)
-max_size = 1048576
+<details>
+<summary>Click to expand build instructions</summary>
 
-[security]
-# Enable TLS encryption
-tls = false
-```
+### Prerequisites
 
-## Usage
+- Rust 1.95+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- On Linux: `sudo apt install libx11-dev libevdev-dev`
 
 ### Build
 
 ```bash
-# Build everything
+git clone https://github.com/denverjen/softkvm.git
+cd softkvm
 cargo build --release
-
-# Build server only
-cargo build --release -p softkvm-server
-
-# Build client only
-cargo build --release -p softkvm-client
+# Binaries at: target/release/softkvm-server, target/release/softkvm-client
 ```
 
-### Cross-Compile
+### Cross-Compile for Windows from Linux
 
 ```bash
-# Install cross-compilation target (e.g., build for Windows from Linux)
-rustup target add x86_64-pc-windows-msvc
-cargo build --release --target x86_64-pc-windows-msvc -p softkvm-server
+rustup target add x86_64-pc-windows-gnu
+cargo install cargo-zigbuild
+cargo zigbuild --release --target x86_64-pc-windows-gnu
 ```
 
-### Run Server
-
-**On Windows:**
-```powershell
-softkvm-server.exe --config softkvm.toml
-```
-
-**On Linux:**
-```bash
-# May need input group membership for evdev access
-softkvm-server --config softkvm.toml
-```
-
-### Run Client
-
-**On Windows:**
-```powershell
-softkvm-client.exe --config softkvm.toml
-```
-
-**On Linux:**
-```bash
-# uinput requires root or udev rules
-sudo softkvm-client --config softkvm.toml
-```
-
-### Linux Udev Setup
-
-To run the client without `sudo`, add a udev rule for uinput:
-
-```bash
-echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
-sudo udevadm control --reload-rules
-sudo usermod -aG input $USER
-# Log out and back in
-```
-
-To allow the server to read input devices without root:
-
-```bash
-sudo usermod -aG input $USER
-# Log out and back in
-```
+</details>
 
 ## Implementation Phases
 
