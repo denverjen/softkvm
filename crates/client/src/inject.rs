@@ -136,21 +136,21 @@ impl InputInjector {
     pub fn mouse_move(&mut self, dx: i16, dy: i16) -> anyhow::Result<()> {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-        let input = windows::Win32::UI::Input::INPUT {
-            r#type: windows::Win32::UI::Input::INPUT_TYPE(0),
-            Anonymous: windows::Win32::UI::Input::INPUT_0 {
-                mi: windows::Win32::UI::Input::MOUSEINPUT {
+        let input = INPUT {
+            r#type: INPUT_TYPE(0),
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
                     dx: dx as i32,
                     dy: dy as i32,
                     mouseData: 0,
-                    dwFlags: MOUSE_EVENT_FLAGS(0x0001), // MOUSEEVENTF_MOVE
+                    dwFlags: MOUSE_EVENT_FLAGS(0x0001),
                     time: 0,
                     dwExtraInfo: 0,
                 },
             },
         };
         unsafe {
-            SendInput(&[input], std::mem::size_of::<windows::Win32::UI::Input::INPUT>() as i32);
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
         }
         Ok(())
     }
@@ -159,19 +159,19 @@ impl InputInjector {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
         let flag = match (button, state) {
-            (MouseButtonId::Left, ButtonState::Pressed) => MOUSE_EVENT_FLAGS(0x0002),   // MOUSEEVENTF_LEFTDOWN
-            (MouseButtonId::Left, ButtonState::Released) => MOUSE_EVENT_FLAGS(0x0004),  // MOUSEEVENTF_LEFTUP
-            (MouseButtonId::Right, ButtonState::Pressed) => MOUSE_EVENT_FLAGS(0x0008),  // MOUSEEVENTF_RIGHTDOWN
-            (MouseButtonId::Right, ButtonState::Released) => MOUSE_EVENT_FLAGS(0x0010), // MOUSEEVENTF_RIGHTUP
-            (MouseButtonId::Middle, ButtonState::Pressed) => MOUSE_EVENT_FLAGS(0x0020), // MOUSEEVENTF_MIDDLEDOWN
-            (MouseButtonId::Middle, ButtonState::Released) => MOUSE_EVENT_FLAGS(0x0040),// MOUSEEVENTF_MIDDLEUP
+            (MouseButtonId::Left, ButtonState::Pressed) => MOUSE_EVENT_FLAGS(0x0002),
+            (MouseButtonId::Left, ButtonState::Released) => MOUSE_EVENT_FLAGS(0x0004),
+            (MouseButtonId::Right, ButtonState::Pressed) => MOUSE_EVENT_FLAGS(0x0008),
+            (MouseButtonId::Right, ButtonState::Released) => MOUSE_EVENT_FLAGS(0x0010),
+            (MouseButtonId::Middle, ButtonState::Pressed) => MOUSE_EVENT_FLAGS(0x0020),
+            (MouseButtonId::Middle, ButtonState::Released) => MOUSE_EVENT_FLAGS(0x0040),
             _ => return Ok(()),
         };
 
-        let input = windows::Win32::UI::Input::INPUT {
-            r#type: windows::Win32::UI::Input::INPUT_TYPE(0),
-            Anonymous: windows::Win32::UI::Input::INPUT_0 {
-                mi: windows::Win32::UI::Input::MOUSEINPUT {
+        let input = INPUT {
+            r#type: INPUT_TYPE(0),
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
                     dx: 0,
                     dy: 0,
                     mouseData: 0,
@@ -182,7 +182,7 @@ impl InputInjector {
             },
         };
         unsafe {
-            SendInput(&[input], std::mem::size_of::<windows::Win32::UI::Input::INPUT>() as i32);
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
         }
         Ok(())
     }
@@ -190,21 +190,21 @@ impl InputInjector {
     pub fn mouse_scroll(&mut self, delta: i16) -> anyhow::Result<()> {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-        let input = windows::Win32::UI::Input::INPUT {
-            r#type: windows::Win32::UI::Input::INPUT_TYPE(0),
-            Anonymous: windows::Win32::UI::Input::INPUT_0 {
-                mi: windows::Win32::UI::Input::MOUSEINPUT {
+        let input = INPUT {
+            r#type: INPUT_TYPE(0),
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
                     dx: 0,
                     dy: 0,
-                    mouseData: (delta as i32) * 120u32 as i32,
-                    dwFlags: MOUSE_EVENT_FLAGS(0x0800), // MOUSEEVENTF_WHEEL
+                    mouseData: ((delta as i32) * 120) as u32,
+                    dwFlags: MOUSE_EVENT_FLAGS(0x0800),
                     time: 0,
                     dwExtraInfo: 0,
                 },
             },
         };
         unsafe {
-            SendInput(&[input], std::mem::size_of::<windows::Win32::UI::Input::INPUT>() as i32);
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
         }
         Ok(())
     }
@@ -218,10 +218,10 @@ impl InputInjector {
             KEYEVENTF_KEYUP
         };
 
-        let input = windows::Win32::UI::Input::INPUT {
-            r#type: windows::Win32::UI::Input::INPUT_TYPE(1),
-            Anonymous: windows::Win32::UI::Input::INPUT_0 {
-                ki: windows::Win32::UI::Input::KEYBDINPUT {
+        let input = INPUT {
+            r#type: INPUT_TYPE(1),
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(keycode),
                     wScan: 0,
                     dwFlags: flag,
@@ -231,7 +231,7 @@ impl InputInjector {
             },
         };
         unsafe {
-            SendInput(&[input], std::mem::size_of::<windows::Win32::UI::Input::INPUT>() as i32);
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
         }
         Ok(())
     }
