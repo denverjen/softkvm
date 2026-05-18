@@ -71,6 +71,8 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
     let mut last_edge: Option<Edge> = None;
     let mut last_edge_y: i32 = 0;
     let mut event_count: u64 = 0;
+    let mut cooldown_until: Option<tokio::time::Instant> = None;
+    let cooldown_duration = std::time::Duration::from_millis(300);
 
     let mut reader_buf = BytesMut::with_capacity(4096);
     let mut read_buf = [0u8; 4096];
@@ -85,31 +87,35 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                     FocusTarget::Server => {
                         let is_mouse_move = matches!(&event.message, Message::MouseMove(_));
                         if is_mouse_move {
-                            let edge = edge_detector.lock().await.check(event.abs_x, event.abs_y, &layout);
-                            if let Some(edge) = edge {
-                                last_edge = Some(edge);
-                                last_edge_y = event.abs_y;
-                                crate::capture::set_block_mouse(true);
-                                tracing::info!(
-                                    "Edge detected at ({}, {}): {:?}, switching to client",
-                                    event.abs_x, event.abs_y, edge
-                                );
-                                let enter_msg = Message::EdgeEnter(EdgeEnterPayload {
-                                    edge,
-                                    position: event.abs_y as u16,
-                                });
-                                if let Err(e) = send_message(&mut writer, &enter_msg).await {
-                                    tracing::error!("Failed to send EdgeEnter: {}", e);
+                            let cooled_down = cooldown_until.map_or(true, |t| tokio::time::Instant::now() >= t);
+                            if cooled_down {
+                                let edge = edge_detector.lock().await.check(event.abs_x, event.abs_y, &layout);
+                                if let Some(edge) = edge {
+                                    last_edge = Some(edge);
+                                    last_edge_y = event.abs_y;
+                                    crate::capture::set_block_mouse(true);
+                                    cooldown_until = None;
+                                    tracing::info!(
+                                        "Edge detected at ({}, {}): {:?}, switching to client",
+                                        event.abs_x, event.abs_y, edge
+                                    );
+                                    let enter_msg = Message::EdgeEnter(EdgeEnterPayload {
+                                        edge,
+                                        position: event.abs_y as u16,
+                                    });
+                                    if let Err(e) = send_message(&mut writer, &enter_msg).await {
+                                        tracing::error!("Failed to send EdgeEnter: {}", e);
+                                    }
+                                    continue;
                                 }
-                                continue;
                             }
-                        }
 
-                        if event_count % 2000 == 0 {
-                            tracing::info!(
-                                "Server mode: {} events, cursor ({}, {})",
-                                event_count, event.abs_x, event.abs_y
-                            );
+                            if event_count % 2000 == 0 {
+                                tracing::info!(
+                                    "Server mode: {} events, cursor ({}, {})",
+                                    event_count, event.abs_x, event.abs_y
+                                );
+                            }
                         }
                     }
                     FocusTarget::Client => {
@@ -118,6 +124,10 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                             edge_detector.lock().await.return_to_server();
                             crate::capture::set_block_mouse(false);
                             break;
+                        }
+
+                        if let Some(edge) = last_edge {
+                            pin_cursor_at_edge(edge, last_edge_y, screen_w as i32, screen_h as i32);
                         }
 
                         if event_count % 2000 == 0 {
@@ -131,6 +141,8 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                 edge_detector.lock().await.return_to_server();
                 last_edge = None;
                 crate::capture::set_block_mouse(false);
+                warp_cursor_inward(screen_w as i32, screen_h as i32);
+                cooldown_until = Some(tokio::time::Instant::now() + cooldown_duration);
                 let _ = send_message(&mut writer, &Message::EdgeLeave(EdgeLeavePayload {
                     edge: Edge::Left,
                 })).await;
@@ -210,6 +222,17 @@ async fn send_message(
 
 #[cfg(target_os = "linux")]
 fn pin_cursor_at_edge(_edge: Edge, _y: i32, _screen_w: i32, _screen_h: i32) {}
+
+#[cfg(target_os = "linux")]
+fn warp_cursor_inward(_sw: i32, _sh: i32) {}
+
+#[cfg(target_os = "windows")]
+fn warp_cursor_inward(sw: i32, _sh: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
+    unsafe {
+        let _ = SetCursorPos(sw - 10, 0);
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn pin_cursor_at_edge(edge: Edge, y: i32, screen_w: i32, screen_h: i32) {
