@@ -131,227 +131,205 @@ fn get_screen_size() -> (u32, u32) {
 }
 
 #[cfg(target_os = "windows")]
+static TX: std::sync::Mutex<Option<mpsc::Sender<CaptureEvent>>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+static PREV_POS: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "windows")]
 pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
-    use softkvm_protocol::message::*;
     use windows::Win32::Foundation::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Input::*;
     use windows::Win32::UI::WindowsAndMessaging::*;
+
+    {
+        let mut guard = TX.lock().unwrap();
+        *guard = Some(tx);
+    }
 
     std::thread::spawn(move || -> anyhow::Result<()> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
-            let class_name = windows::core::w!("SoftKVMCapture");
 
-            unsafe extern "system" fn default_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-
-            let wc = WNDCLASSW {
-                lpfnWndProc: Some(default_wnd_proc),
-                hInstance: instance.into(),
-                lpszClassName: class_name,
-                ..Default::default()
-            };
-            RegisterClassW(&wc);
-
-            let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                class_name,
-                windows::core::w!("SoftKVM"),
-                WINDOW_STYLE::default(),
-                0, 0, 0, 0,
-                HWND::default(),
-                HMENU::default(),
+            let mouse_hook = SetWindowsHookExW(
+                WH_MOUSE_LL,
+                Some(mouse_hook_callback),
                 instance,
-                None,
+                0,
             )?;
+            tracing::info!("Mouse low-level hook installed");
 
-            tracing::info!("Capture hidden window created: {:?}", hwnd);
+            let keyboard_hook = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(keyboard_hook_callback),
+                instance,
+                0,
+            )?;
+            tracing::info!("Keyboard low-level hook installed");
 
-            let devices = [
-                RAWINPUTDEVICE {
-                    usUsagePage: 0x01,
-                    usUsage: 0x06,
-                    dwFlags: RIDEV_INPUTSINK,
-                    hwndTarget: hwnd,
-                },
-                RAWINPUTDEVICE {
-                    usUsagePage: 0x01,
-                    usUsage: 0x02,
-                    dwFlags: RIDEV_INPUTSINK,
-                    hwndTarget: hwnd,
-                },
-            ];
-            match RegisterRawInputDevices(&devices, std::mem::size_of::<RAWINPUTDEVICE>() as u32) {
-                Ok(()) => tracing::info!("Raw input devices registered (keyboard + mouse)"),
-                Err(e) => tracing::error!("RegisterRawInputDevices FAILED: {}", e),
-            }
-
-            let mut msg_count: u64 = 0;
-            let mut wm_input_count: u64 = 0;
             let mut msg = MSG::default();
-            loop {
-                let ret = GetMessageW(&mut msg, HWND::default(), 0, 0);
-                if ret.0 == 0 || ret.0 == -1 {
-                    tracing::info!("GetMessageW returned {}, exiting loop", ret.0);
-                    break;
-                }
-                msg_count += 1;
-                if msg_count == 1 {
-                    tracing::info!("Message loop alive, first message received: msg={}", msg.message);
-                }
-                if msg.message == WM_INPUT {
-                    wm_input_count += 1;
-                    if wm_input_count == 1 {
-                        tracing::info!("First WM_INPUT received!");
-                    }
-                    let mut raw: RAWINPUT = std::mem::zeroed();
-                    let mut size = std::mem::size_of::<RAWINPUT>() as u32;
-                    let result = GetRawInputData(
-                        HRAWINPUT(msg.lParam.0 as *mut _),
-                        RID_INPUT,
-                        Some(&mut raw as *mut RAWINPUT as *mut core::ffi::c_void),
-                        &mut size,
-                        std::mem::size_of::<RAWINPUTHEADER>() as u32,
-                    );
-                    if result == 0 || result == u32::MAX {
-                        tracing::warn!("GetRawInputData returned {}", result);
-                        continue;
-                    }
-
-                    let device_type = raw.header.dwType;
-                    if device_type == RIM_TYPEMOUSE.0 {
-                        let mouse = raw.data.mouse;
-                        let dx = mouse.lLastX as i16;
-                        let dy = mouse.lLastY as i16;
-
-                        if dx != 0 || dy != 0 {
-                            let mut point = POINT::default();
-                            let _ = GetCursorPos(&mut point);
-
-                            if wm_input_count <= 5 {
-                                tracing::info!("Capture mouse #{}: dx={}, dy={}, abs=({}, {})", wm_input_count, dx, dy, point.x, point.y);
-                            }
-
-                            if dx != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseMove(MouseMovePayload { dx, dy: 0 }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if dy != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseMove(MouseMovePayload { dx: 0, dy }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                        }
-
-                        let button_flags = mouse.Anonymous.Anonymous.usButtonFlags;
-                        if button_flags != 0 {
-                            let mut point = POINT::default();
-                            let _ = GetCursorPos(&mut point);
-
-                            if button_flags & RI_MOUSE_LEFT_BUTTON_DOWN as u16 != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseButton(MouseButtonPayload {
-                                        button: MouseButtonId::Left,
-                                        state: ButtonState::Pressed,
-                                    }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if button_flags & RI_MOUSE_LEFT_BUTTON_UP as u16 != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseButton(MouseButtonPayload {
-                                        button: MouseButtonId::Left,
-                                        state: ButtonState::Released,
-                                    }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN as u16 != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseButton(MouseButtonPayload {
-                                        button: MouseButtonId::Right,
-                                        state: ButtonState::Pressed,
-                                    }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if button_flags & RI_MOUSE_RIGHT_BUTTON_UP as u16 != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseButton(MouseButtonPayload {
-                                        button: MouseButtonId::Right,
-                                        state: ButtonState::Released,
-                                    }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if button_flags & RI_MOUSE_MIDDLE_BUTTON_DOWN as u16 != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseButton(MouseButtonPayload {
-                                        button: MouseButtonId::Middle,
-                                        state: ButtonState::Pressed,
-                                    }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if button_flags & RI_MOUSE_MIDDLE_BUTTON_UP as u16 != 0 {
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseButton(MouseButtonPayload {
-                                        button: MouseButtonId::Middle,
-                                        state: ButtonState::Released,
-                                    }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                            if button_flags & RI_MOUSE_WHEEL as u16 != 0 {
-                                let delta = mouse.Anonymous.Anonymous.usButtonData as i16;
-                                let _ = tx.blocking_send(CaptureEvent {
-                                    message: Message::MouseScroll(MouseScrollPayload { delta }),
-                                    abs_x: point.x,
-                                    abs_y: point.y,
-                                });
-                            }
-                        }
-                    } else if device_type == RIM_TYPEKEYBOARD.0 {
-                        let keyboard = raw.data.keyboard;
-                        let vkey = keyboard.VKey as u16;
-                        let flags = keyboard.Flags;
-                        let pressed = (flags as u32 & RI_KEY_BREAK) == 0;
-
-                        let mut point = POINT::default();
-                        let _ = GetCursorPos(&mut point);
-                        let msg = if pressed {
-                            Message::KeyDown(KeyPayload { keycode: vkey })
-                        } else {
-                            Message::KeyUp(KeyPayload { keycode: vkey })
-                        };
-                        let _ = tx.blocking_send(CaptureEvent {
-                            message: msg,
-                            abs_x: point.x,
-                            abs_y: point.y,
-                        });
-                    }
-                }
+            while GetMessageW(&mut msg, HWND::default(), 0, 0).0 > 0 {
                 DispatchMessageW(&msg);
-
-                if msg_count % 10000 == 0 {
-                    tracing::info!("Message loop stats: total={}, wm_input={}", msg_count, wm_input_count);
-                }
             }
+
+            let _ = UnhookWindowsHookEx(mouse_hook);
+            let _ = UnhookWindowsHookEx(keyboard_hook);
         }
         Ok(())
     });
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn mouse_hook_callback(
+    code: i32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    use softkvm_protocol::message::*;
+
+    if code >= 0 {
+        let llhs = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+        let guard = crate::capture::TX.lock().unwrap();
+        if let Some(tx) = guard.as_ref() {
+            let msg_type = wparam.0 as u32;
+            let abs_x = llhs.pt.x;
+            let abs_y = llhs.pt.y;
+
+            match msg_type {
+                x if x == WM_MOUSEMOVE => {
+                    let mut prev = crate::capture::PREV_POS.lock().unwrap();
+                    let (dx, dy) = if let Some((px, py)) = *prev {
+                        ((abs_x - px) as i16, (abs_y - py) as i16)
+                    } else {
+                        (0i16, 0i16)
+                    };
+                    *prev = Some((abs_x, abs_y));
+
+                    if dx != 0 {
+                        let _ = tx.blocking_send(CaptureEvent {
+                            message: Message::MouseMove(MouseMovePayload { dx, dy: 0 }),
+                            abs_x,
+                            abs_y,
+                        });
+                    }
+                    if dy != 0 {
+                        let _ = tx.blocking_send(CaptureEvent {
+                            message: Message::MouseMove(MouseMovePayload { dx: 0, dy }),
+                            abs_x,
+                            abs_y,
+                        });
+                    }
+                }
+                x if x == WM_LBUTTONDOWN => {
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseButton(MouseButtonPayload {
+                            button: MouseButtonId::Left,
+                            state: ButtonState::Pressed,
+                        }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                x if x == WM_LBUTTONUP => {
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseButton(MouseButtonPayload {
+                            button: MouseButtonId::Left,
+                            state: ButtonState::Released,
+                        }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                x if x == WM_RBUTTONDOWN => {
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseButton(MouseButtonPayload {
+                            button: MouseButtonId::Right,
+                            state: ButtonState::Pressed,
+                        }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                x if x == WM_RBUTTONUP => {
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseButton(MouseButtonPayload {
+                            button: MouseButtonId::Right,
+                            state: ButtonState::Released,
+                        }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                x if x == WM_MBUTTONDOWN => {
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseButton(MouseButtonPayload {
+                            button: MouseButtonId::Middle,
+                            state: ButtonState::Pressed,
+                        }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                x if x == WM_MBUTTONUP => {
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseButton(MouseButtonPayload {
+                            button: MouseButtonId::Middle,
+                            state: ButtonState::Released,
+                        }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                x if x == WM_MOUSEWHEEL => {
+                    let delta = (llhs.mouseData >> 16) as i16;
+                    let _ = tx.blocking_send(CaptureEvent {
+                        message: Message::MouseScroll(MouseScrollPayload { delta }),
+                        abs_x,
+                        abs_y,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn keyboard_hook_callback(
+    code: i32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    use softkvm_protocol::message::*;
+
+    if code >= 0 {
+        let llhs = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+        let guard = crate::capture::TX.lock().unwrap();
+        if let Some(tx) = guard.as_ref() {
+            let msg_type = wparam.0 as u32;
+            let vk = llhs.vkCode as u16;
+            let pressed = msg_type == WM_KEYDOWN || msg_type == WM_SYSKEYDOWN;
+
+            let msg = if pressed {
+                Message::KeyDown(KeyPayload { keycode: vk })
+            } else {
+                Message::KeyUp(KeyPayload { keycode: vk })
+            };
+
+            let mut point = POINT::default();
+            let _ = GetCursorPos(&mut point);
+            let _ = tx.blocking_send(CaptureEvent {
+                message: msg,
+                abs_x: point.x,
+                abs_y: point.y,
+            });
+        }
+    }
+    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
 }
