@@ -147,7 +147,7 @@ fn get_screen_size() -> (u32, u32) {
 
 #[cfg(target_os = "windows")]
 fn get_screen_size() -> (u32, u32) {
-    use windows::Win32::Graphics::Gdi::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
     unsafe {
         let w = GetSystemMetrics(SM_CXSCREEN) as u32;
         let h = GetSystemMetrics(SM_CYSCREEN) as u32;
