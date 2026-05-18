@@ -142,13 +142,15 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                         let is_mouse_move = matches!(&event.message, Message::MouseMove(_));
                         let msg = match &event.message {
                             Message::MouseMove(_) => {
-                                virtual_x += event.dx;
-                                virtual_y += event.dy;
+                                let sx = client_screen.width as f64 / screen_w as f64;
+                                let sy = client_screen.height as f64 / screen_h as f64;
+                                virtual_x += (event.dx as f64 * sx) as i32;
+                                virtual_y += (event.dy as f64 * sy) as i32;
                                 virtual_x = virtual_x.clamp(0, client_screen.width as i32 - 1);
                                 virtual_y = virtual_y.clamp(0, client_screen.height as i32 - 1);
                                 Message::MouseMove(MouseMovePayload {
-                                    x: virtual_x,
-                                    y: virtual_y,
+                                    x: event.dx,
+                                    y: event.dy,
                                 })
                             }
                             other => other.clone(),

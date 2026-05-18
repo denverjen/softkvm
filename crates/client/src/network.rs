@@ -92,7 +92,7 @@ pub async fn run(config: &Config) -> Result<()> {
                         }
                         Message::MouseMove(p) => {
                             if active {
-                                inject_mouse_move_absolute(p.x, p.y, screen_w as i32, screen_h as i32);
+                                inject_mouse_move(p.x as i16, p.y as i16);
 
                                 if let Some(entry) = entry_edge {
                                     if let Some((cx, cy)) = get_cursor_pos() {
