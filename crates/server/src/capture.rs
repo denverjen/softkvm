@@ -5,6 +5,8 @@ pub struct CaptureEvent {
     pub message: Message,
     pub abs_x: i32,
     pub abs_y: i32,
+    pub dx: i32,
+    pub dy: i32,
 }
 
 #[cfg(target_os = "linux")]
@@ -62,18 +64,30 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         RelativeAxisType::REL_X => {
                                             let dx = ev.value();
                                             cursor_x.fetch_add(dx, Ordering::SeqCst);
-                                            Some(Message::MouseMove(MouseMovePayload {
-                                                x: 0,
-                                                y: 0,
-                                            }))
+                                            let x = cursor_x.load(Ordering::SeqCst);
+                                            let y = cursor_y.load(Ordering::SeqCst);
+                                            let _ = tx.blocking_send(CaptureEvent {
+                                                message: Message::MouseMove(MouseMovePayload { x: 0, y: 0 }),
+                                                abs_x: x,
+                                                abs_y: y,
+                                                dx,
+                                                dy: 0,
+                                            });
+                                            None
                                         }
                                         RelativeAxisType::REL_Y => {
                                             let dy = ev.value();
                                             cursor_y.fetch_add(dy, Ordering::SeqCst);
-                                            Some(Message::MouseMove(MouseMovePayload {
-                                                x: 0,
-                                                y: 0,
-                                            }))
+                                            let x = cursor_x.load(Ordering::SeqCst);
+                                            let y = cursor_y.load(Ordering::SeqCst);
+                                            let _ = tx.blocking_send(CaptureEvent {
+                                                message: Message::MouseMove(MouseMovePayload { x: 0, y: 0 }),
+                                                abs_x: x,
+                                                abs_y: y,
+                                                dx: 0,
+                                                dy,
+                                            });
+                                            None
                                         }
                                         RelativeAxisType::REL_WHEEL => {
                                             Some(Message::MouseScroll(MouseScrollPayload {
@@ -93,6 +107,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                     message,
                                     abs_x: x,
                                     abs_y: y,
+                                    dx: 0,
+                                    dy: 0,
                                 });
                             }
                         }
@@ -223,8 +239,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                         let device_type = raw.header.dwType;
                         if device_type == RIM_TYPEMOUSE.0 {
                             let mouse = raw.data.mouse;
-                            let dx = mouse.lLastX as i16;
-                            let dy = mouse.lLastY as i16;
+                            let dx = mouse.lLastX;
+                            let dy = mouse.lLastY;
 
                             if dx != 0 || dy != 0 {
                                 let mut point = POINT::default();
@@ -234,6 +250,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                     message: Message::MouseMove(MouseMovePayload { x: 0, y: 0 }),
                                     abs_x: point.x,
                                     abs_y: point.y,
+                                    dx,
+                                    dy,
                                 });
                             }
 
@@ -250,6 +268,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                                 if button_flags & RI_MOUSE_LEFT_BUTTON_UP as u16 != 0 {
@@ -260,6 +280,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                                 if button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN as u16 != 0 {
@@ -270,6 +292,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                                 if button_flags & RI_MOUSE_RIGHT_BUTTON_UP as u16 != 0 {
@@ -280,6 +304,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                                 if button_flags & RI_MOUSE_MIDDLE_BUTTON_DOWN as u16 != 0 {
@@ -290,6 +316,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                                 if button_flags & RI_MOUSE_MIDDLE_BUTTON_UP as u16 != 0 {
@@ -300,6 +328,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                                 if button_flags & RI_MOUSE_WHEEL as u16 != 0 {
@@ -308,6 +338,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                         message: Message::MouseScroll(MouseScrollPayload { delta }),
                                         abs_x: point.x,
                                         abs_y: point.y,
+                                        dx: 0,
+                                        dy: 0,
                                     });
                                 }
                             }
@@ -328,6 +360,8 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                 message: msg,
                                 abs_x: point.x,
                                 abs_y: point.y,
+                                dx: 0,
+                                dy: 0,
                             });
                         }
                     }

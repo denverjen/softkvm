@@ -73,6 +73,8 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
     let mut event_count: u64 = 0;
     let mut cooldown_until: Option<tokio::time::Instant> = None;
     let cooldown_duration = std::time::Duration::from_millis(300);
+    let mut virtual_x: i32 = 0;
+    let mut virtual_y: i32 = 0;
 
     let mut reader_buf = BytesMut::with_capacity(4096);
     let mut read_buf = [0u8; 4096];
@@ -95,6 +97,20 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                                     last_edge_y = event.abs_y;
                                     crate::capture::set_block_mouse(true);
                                     cooldown_until = None;
+                                    virtual_x = match edge {
+                                        Edge::Right => 0,
+                                        Edge::Left => client_screen.width as i32 - 1,
+                                        Edge::Bottom => 0,
+                                        Edge::Top => client_screen.height as i32 - 1,
+                                    };
+                                    virtual_y = match edge {
+                                        Edge::Right | Edge::Left => {
+                                            let mapped = event.abs_y as f64 / screen_h as f64 * client_screen.height as f64;
+                                            mapped as i32
+                                        }
+                                        Edge::Bottom => 0,
+                                        Edge::Top => 0,
+                                    };
                                     tracing::info!(
                                         "Edge detected at ({}, {}): {:?}, switching to client",
                                         event.abs_x, event.abs_y, edge
@@ -121,9 +137,13 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                     FocusTarget::Client => {
                         let msg = match &event.message {
                             Message::MouseMove(_) => {
+                                virtual_x += event.dx;
+                                virtual_y += event.dy;
+                                virtual_x = virtual_x.clamp(0, client_screen.width as i32 - 1);
+                                virtual_y = virtual_y.clamp(0, client_screen.height as i32 - 1);
                                 Message::MouseMove(MouseMovePayload {
-                                    x: event.abs_x,
-                                    y: event.abs_y,
+                                    x: virtual_x,
+                                    y: virtual_y,
                                 })
                             }
                             other => other.clone(),
