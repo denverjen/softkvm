@@ -66,6 +66,8 @@ pub async fn run(config: &Config) -> Result<()> {
     let mut active = false;
     let mut entry_edge: Option<Edge> = None;
     let mut moved_away = false;
+    let mut server_w: i32 = 0;
+    let mut server_h: i32 = 0;
     let edge_size: i32 = 5;
     let away_threshold: i32 = 30;
 
@@ -85,14 +87,18 @@ pub async fn run(config: &Config) -> Result<()> {
                 while let Some(msg) = serialize::decode(&mut buf)? {
                     match msg {
                         Message::HelloAck(p) => {
+                            server_w = p.screen.width as i32;
+                            server_h = p.screen.height as i32;
                             tracing::info!(
                                 "Server hello ack: {}x{}, layout: {:?}",
                                 p.screen.width, p.screen.height, p.layout
                             );
                         }
                         Message::MouseMove(p) => {
-                            if active {
-                                inject_mouse_move(p.dx, p.dy);
+                            if active && server_w > 0 && server_h > 0 {
+                                let mapped_x = (p.x as f64 / server_w as f64 * screen_w as f64) as i32;
+                                let mapped_y = (p.y as f64 / server_h as f64 * screen_h as f64) as i32;
+                                inject_mouse_move_absolute(mapped_x, mapped_y, screen_w as i32, screen_h as i32);
 
                                 if let Some(entry) = entry_edge {
                                     if let Some((cx, cy)) = get_cursor_pos() {

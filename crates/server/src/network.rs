@@ -119,7 +119,16 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                         }
                     }
                     FocusTarget::Client => {
-                        if let Err(e) = send_message(&mut writer, &event.message).await {
+                        let msg = match &event.message {
+                            Message::MouseMove(_) => {
+                                Message::MouseMove(MouseMovePayload {
+                                    x: event.abs_x,
+                                    y: event.abs_y,
+                                })
+                            }
+                            other => other.clone(),
+                        };
+                        if let Err(e) = send_message(&mut writer, &msg).await {
                             tracing::error!("Failed to forward event: {}", e);
                             edge_detector.lock().await.return_to_server();
                             crate::capture::set_block_mouse(false);

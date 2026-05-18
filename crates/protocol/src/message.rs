@@ -89,8 +89,8 @@ pub enum LayoutPosition {
 
 #[derive(Debug, Clone)]
 pub struct MouseMovePayload {
-    pub dx: i16,
-    pub dy: i16,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Debug, Clone)]

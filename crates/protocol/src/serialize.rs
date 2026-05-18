@@ -49,7 +49,7 @@ pub fn decode(buf: &mut BytesMut) -> Result<Option<Message>, ProtocolError> {
     let payload = match msg_type {
         MessageType::Hello
         | MessageType::HelloAck => 4 + 1,
-        MessageType::MouseMove => 4,
+        MessageType::MouseMove => 8,
         MessageType::MouseButton => 2,
         MessageType::MouseScroll => 2,
         MessageType::KeyDown | MessageType::KeyUp => 2,
@@ -98,8 +98,8 @@ fn encode_payload(msg: &Message) -> Vec<u8> {
             buf.put_u8(layout_to_byte(&p.layout));
         }
         Message::MouseMove(p) => {
-            buf.put_i16_le(p.dx);
-            buf.put_i16_le(p.dy);
+            buf.put_i32_le(p.x);
+            buf.put_i32_le(p.y);
         }
         Message::MouseButton(p) => {
             buf.put_u8(p.button as u8);
@@ -151,9 +151,9 @@ fn decode_message(msg_type: MessageType, buf: &mut BytesMut) -> Result<Message, 
             })
         }
         MessageType::MouseMove => {
-            let dx = buf.get_i16_le();
-            let dy = buf.get_i16_le();
-            Message::MouseMove(MouseMovePayload { dx, dy })
+            let x = buf.get_i32_le();
+            let y = buf.get_i32_le();
+            Message::MouseMove(MouseMovePayload { x, y })
         }
         MessageType::MouseButton => {
             let button = byte_to_button(buf.get_u8());

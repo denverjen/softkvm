@@ -63,16 +63,16 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                             let dx = ev.value();
                                             cursor_x.fetch_add(dx, Ordering::SeqCst);
                                             Some(Message::MouseMove(MouseMovePayload {
-                                                dx: dx as i16,
-                                                dy: 0,
+                                                x: 0,
+                                                y: 0,
                                             }))
                                         }
                                         RelativeAxisType::REL_Y => {
                                             let dy = ev.value();
                                             cursor_y.fetch_add(dy, Ordering::SeqCst);
                                             Some(Message::MouseMove(MouseMovePayload {
-                                                dx: 0,
-                                                dy: dy as i16,
+                                                x: 0,
+                                                y: 0,
                                             }))
                                         }
                                         RelativeAxisType::REL_WHEEL => {
@@ -230,20 +230,11 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
                                 let mut point = POINT::default();
                                 let _ = GetCursorPos(&mut point);
 
-                                if dx != 0 {
-                                    let _ = tx.blocking_send(CaptureEvent {
-                                        message: Message::MouseMove(MouseMovePayload { dx, dy: 0 }),
-                                        abs_x: point.x,
-                                        abs_y: point.y,
-                                    });
-                                }
-                                if dy != 0 {
-                                    let _ = tx.blocking_send(CaptureEvent {
-                                        message: Message::MouseMove(MouseMovePayload { dx: 0, dy }),
-                                        abs_x: point.x,
-                                        abs_y: point.y,
-                                    });
-                                }
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseMove(MouseMovePayload { x: 0, y: 0 }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
                             }
 
                             let button_flags = mouse.Anonymous.Anonymous.usButtonFlags;
