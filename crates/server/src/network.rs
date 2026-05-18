@@ -89,6 +89,7 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                             if let Some(edge) = edge {
                                 last_edge = Some(edge);
                                 last_edge_y = event.abs_y;
+                                crate::capture::set_block_mouse(true);
                                 tracing::info!(
                                     "Edge detected at ({}, {}): {:?}, switching to client",
                                     event.abs_x, event.abs_y, edge
@@ -115,11 +116,8 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                         if let Err(e) = send_message(&mut writer, &event.message).await {
                             tracing::error!("Failed to forward event: {}", e);
                             edge_detector.lock().await.return_to_server();
+                            crate::capture::set_block_mouse(false);
                             break;
-                        }
-
-                        if let Some(edge) = last_edge {
-                            pin_cursor_at_edge(edge, last_edge_y, screen_w as i32, screen_h as i32);
                         }
 
                         if event_count % 2000 == 0 {
@@ -132,6 +130,7 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                 tracing::info!("EdgeLeave received from client, switching back to server");
                 edge_detector.lock().await.return_to_server();
                 last_edge = None;
+                crate::capture::set_block_mouse(false);
                 let _ = send_message(&mut writer, &Message::EdgeLeave(EdgeLeavePayload {
                     edge: Edge::Left,
                 })).await;

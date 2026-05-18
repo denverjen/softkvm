@@ -137,6 +137,14 @@ static TX: std::sync::Mutex<Option<mpsc::Sender<CaptureEvent>>> = std::sync::Mut
 static PREV_POS: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "windows")]
+static BLOCK_MOUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+pub fn set_block_mouse(block: bool) {
+    BLOCK_MOUSE.store(block, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(target_os = "windows")]
 pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
     use windows::Win32::Foundation::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -192,6 +200,7 @@ unsafe extern "system" fn mouse_hook_callback(
 
     if code >= 0 {
         let llhs = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+        let block = crate::capture::BLOCK_MOUSE.load(std::sync::atomic::Ordering::Acquire);
         let guard = crate::capture::TX.lock().unwrap();
         if let Some(tx) = guard.as_ref() {
             let msg_type = wparam.0 as u32;
@@ -207,6 +216,28 @@ unsafe extern "system" fn mouse_hook_callback(
                         (0i16, 0i16)
                     };
                     *prev = Some((abs_x, abs_y));
+                    drop(prev);
+
+                    if block {
+                        if dx != 0 || dy != 0 {
+                            if dx != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseMove(MouseMovePayload { dx, dy: 0 }),
+                                    abs_x,
+                                    abs_y,
+                                });
+                            }
+                            if dy != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseMove(MouseMovePayload { dx: 0, dy }),
+                                    abs_x,
+                                    abs_y,
+                                });
+                            }
+                        }
+                        drop(guard);
+                        return LRESULT(1);
+                    }
 
                     if dx != 0 {
                         let _ = tx.blocking_send(CaptureEvent {

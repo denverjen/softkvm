@@ -65,7 +65,9 @@ pub async fn run(config: &Config) -> Result<()> {
     let writer = std::sync::Arc::new(tokio::sync::Mutex::new(writer));
     let mut active = false;
     let mut entry_edge: Option<Edge> = None;
+    let mut moved_away = false;
     let edge_size: i32 = 5;
+    let away_threshold: i32 = 30;
 
     let mut buf = BytesMut::with_capacity(4096);
     let mut read_buf = [0u8; 4096];
@@ -94,26 +96,40 @@ pub async fn run(config: &Config) -> Result<()> {
 
                                 if let Some(entry) = entry_edge {
                                     if let Some((cx, cy)) = get_cursor_pos() {
-                                        let should_leave = match entry {
-                                            Edge::Right => cx <= edge_size,
-                                            Edge::Left => cx >= (screen_w as i32 - edge_size),
-                                            Edge::Bottom => cy <= edge_size,
-                                            Edge::Top => cy >= (screen_h as i32 - edge_size),
-                                        };
-                                        if should_leave {
-                                            tracing::info!(
-                                                "Cursor at ({}, {}) hit return edge, sending EdgeLeave",
-                                                cx, cy
-                                            );
-                                            active = false;
-                                            entry_edge = None;
-                                            let w = writer.clone();
-                                            tokio::spawn(async move {
-                                                let mut w = w.lock().await;
-                                                let _ = send_message(&mut w, &Message::EdgeLeave(EdgeLeavePayload {
-                                                    edge: Edge::Left,
-                                                })).await;
-                                            });
+                                        if !moved_away {
+                                            let far_enough = match entry {
+                                                Edge::Right => cx >= away_threshold,
+                                                Edge::Left => cx <= (screen_w as i32 - away_threshold),
+                                                Edge::Bottom => cy >= away_threshold,
+                                                Edge::Top => cy <= (screen_h as i32 - away_threshold),
+                                            };
+                                            if far_enough {
+                                                moved_away = true;
+                                            }
+                                        }
+                                        if moved_away {
+                                            let should_leave = match entry {
+                                                Edge::Right => cx <= edge_size,
+                                                Edge::Left => cx >= (screen_w as i32 - edge_size),
+                                                Edge::Bottom => cy <= edge_size,
+                                                Edge::Top => cy >= (screen_h as i32 - edge_size),
+                                            };
+                                            if should_leave {
+                                                tracing::info!(
+                                                    "Cursor at ({}, {}) hit return edge, sending EdgeLeave",
+                                                    cx, cy
+                                                );
+                                                active = false;
+                                                entry_edge = None;
+                                                moved_away = false;
+                                                let w = writer.clone();
+                                                tokio::spawn(async move {
+                                                    let mut w = w.lock().await;
+                                                    let _ = send_message(&mut w, &Message::EdgeLeave(EdgeLeavePayload {
+                                                        edge: Edge::Left,
+                                                    })).await;
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -143,6 +159,7 @@ pub async fn run(config: &Config) -> Result<()> {
                             tracing::info!("EdgeEnter: edge={:?}, position={}", p.edge, p.position);
                             active = true;
                             entry_edge = Some(p.edge);
+                            moved_away = false;
                             let sw = screen_w as i32;
                             let sh = screen_h as i32;
                             match p.edge {
