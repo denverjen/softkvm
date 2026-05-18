@@ -20,6 +20,7 @@ pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
     let (screen_w, screen_h) = get_screen_size();
     cursor_x.store(screen_w as i32 / 2, Ordering::SeqCst);
     cursor_y.store(screen_h as i32 / 2, Ordering::SeqCst);
+    tracing::info!("Capture started, screen: {}x{}, cursor init: ({}, {})", screen_w, screen_h, screen_w / 2, screen_h / 2);
 
     std::thread::spawn(move || -> anyhow::Result<()> {
         let mut devices: Vec<Device> = evdev::enumerate()
@@ -131,51 +132,223 @@ fn get_screen_size() -> (u32, u32) {
 
 #[cfg(target_os = "windows")]
 pub fn start_capture(tx: mpsc::Sender<CaptureEvent>) -> anyhow::Result<()> {
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Arc;
+    use softkvm_protocol::message::*;
     use windows::Win32::Foundation::*;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Input::*;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
-    let cursor_x: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
-    let cursor_y: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
-
     std::thread::spawn(move || -> anyhow::Result<()> {
         unsafe {
-            let rid_keyboard = RAWINPUTDEVICE {
-                usUsagePage: 0x01,
-                usUsage: 0x06,
-                dwFlags: RIDEV_INPUTSINK,
-                hwndTarget: HWND(std::ptr::null_mut()),
-            };
-            RegisterRawInputDevices(&[rid_keyboard], std::mem::size_of::<RAWINPUTDEVICE>() as u32);
+            let instance = GetModuleHandleW(None)?;
+            let class_name = windows::core::w!("SoftKVMCapture");
 
-            let rid_mouse = RAWINPUTDEVICE {
-                usUsagePage: 0x01,
-                usUsage: 0x02,
-                dwFlags: RIDEV_INPUTSINK,
-                hwndTarget: HWND(std::ptr::null_mut()),
-            };
-            RegisterRawInputDevices(&[rid_mouse], std::mem::size_of::<RAWINPUTDEVICE>() as u32);
-        }
+            unsafe extern "system" fn default_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
 
-        let mut msg = MSG::default();
-        unsafe {
-            while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(default_wnd_proc),
+                hInstance: instance.into(),
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class_name,
+                windows::core::w!("SoftKVM"),
+                WINDOW_STYLE::default(),
+                0, 0, 0, 0,
+                HWND::default(),
+                HMENU::default(),
+                instance,
+                None,
+            )?;
+
+            tracing::info!("Capture hidden window created: {:?}", hwnd);
+
+            let devices = [
+                RAWINPUTDEVICE {
+                    usUsagePage: 0x01,
+                    usUsage: 0x06,
+                    dwFlags: RIDEV_INPUTSINK,
+                    hwndTarget: hwnd,
+                },
+                RAWINPUTDEVICE {
+                    usUsagePage: 0x01,
+                    usUsage: 0x02,
+                    dwFlags: RIDEV_INPUTSINK,
+                    hwndTarget: hwnd,
+                },
+            ];
+            match RegisterRawInputDevices(&devices, std::mem::size_of::<RAWINPUTDEVICE>() as u32) {
+                Ok(()) => tracing::info!("Raw input devices registered (keyboard + mouse)"),
+                Err(e) => tracing::error!("RegisterRawInputDevices FAILED: {}", e),
+            }
+
+            let mut msg_count: u64 = 0;
+            let mut wm_input_count: u64 = 0;
+            let mut msg = MSG::default();
+            loop {
+                let ret = GetMessageW(&mut msg, HWND::default(), 0, 0);
+                if ret.0 == 0 || ret.0 == -1 {
+                    tracing::info!("GetMessageW returned {}, exiting loop", ret.0);
+                    break;
+                }
+                msg_count += 1;
+                if msg_count == 1 {
+                    tracing::info!("Message loop alive, first message received: msg={}", msg.message);
+                }
                 if msg.message == WM_INPUT {
-                    let mut point = POINT::default();
-                    windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point);
-                    let x = point.x;
-                    let y = point.y;
-                    cursor_x.store(x, Ordering::SeqCst);
-                    cursor_y.store(y, Ordering::SeqCst);
-                    let _ = tx.blocking_send(CaptureEvent {
-                        message: Message::Heartbeat,
-                        abs_x: x,
-                        abs_y: y,
-                    });
+                    wm_input_count += 1;
+                    if wm_input_count == 1 {
+                        tracing::info!("First WM_INPUT received!");
+                    }
+                    let mut raw: RAWINPUT = std::mem::zeroed();
+                    let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+                    let result = GetRawInputData(
+                        HRAWINPUT(msg.lParam.0 as *mut _),
+                        RID_INPUT,
+                        Some(&mut raw as *mut RAWINPUT as *mut core::ffi::c_void),
+                        &mut size,
+                        std::mem::size_of::<RAWINPUTHEADER>() as u32,
+                    );
+                    if result == 0 || result == u32::MAX {
+                        tracing::warn!("GetRawInputData returned {}", result);
+                        continue;
+                    }
+
+                    let device_type = raw.header.dwType;
+                    if device_type == RIM_TYPEMOUSE.0 {
+                        let mouse = raw.data.mouse;
+                        let dx = mouse.lLastX as i16;
+                        let dy = mouse.lLastY as i16;
+
+                        if dx != 0 || dy != 0 {
+                            let mut point = POINT::default();
+                            let _ = GetCursorPos(&mut point);
+
+                            if wm_input_count <= 5 {
+                                tracing::info!("Capture mouse #{}: dx={}, dy={}, abs=({}, {})", wm_input_count, dx, dy, point.x, point.y);
+                            }
+
+                            if dx != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseMove(MouseMovePayload { dx, dy: 0 }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if dy != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseMove(MouseMovePayload { dx: 0, dy }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                        }
+
+                        let button_flags = mouse.Anonymous.Anonymous.usButtonFlags;
+                        if button_flags != 0 {
+                            let mut point = POINT::default();
+                            let _ = GetCursorPos(&mut point);
+
+                            if button_flags & RI_MOUSE_LEFT_BUTTON_DOWN as u16 != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseButton(MouseButtonPayload {
+                                        button: MouseButtonId::Left,
+                                        state: ButtonState::Pressed,
+                                    }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if button_flags & RI_MOUSE_LEFT_BUTTON_UP as u16 != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseButton(MouseButtonPayload {
+                                        button: MouseButtonId::Left,
+                                        state: ButtonState::Released,
+                                    }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN as u16 != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseButton(MouseButtonPayload {
+                                        button: MouseButtonId::Right,
+                                        state: ButtonState::Pressed,
+                                    }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if button_flags & RI_MOUSE_RIGHT_BUTTON_UP as u16 != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseButton(MouseButtonPayload {
+                                        button: MouseButtonId::Right,
+                                        state: ButtonState::Released,
+                                    }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if button_flags & RI_MOUSE_MIDDLE_BUTTON_DOWN as u16 != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseButton(MouseButtonPayload {
+                                        button: MouseButtonId::Middle,
+                                        state: ButtonState::Pressed,
+                                    }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if button_flags & RI_MOUSE_MIDDLE_BUTTON_UP as u16 != 0 {
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseButton(MouseButtonPayload {
+                                        button: MouseButtonId::Middle,
+                                        state: ButtonState::Released,
+                                    }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                            if button_flags & RI_MOUSE_WHEEL as u16 != 0 {
+                                let delta = mouse.Anonymous.Anonymous.usButtonData as i16;
+                                let _ = tx.blocking_send(CaptureEvent {
+                                    message: Message::MouseScroll(MouseScrollPayload { delta }),
+                                    abs_x: point.x,
+                                    abs_y: point.y,
+                                });
+                            }
+                        }
+                    } else if device_type == RIM_TYPEKEYBOARD.0 {
+                        let keyboard = raw.data.keyboard;
+                        let vkey = keyboard.VKey as u16;
+                        let flags = keyboard.Flags;
+                        let pressed = (flags as u32 & RI_KEY_BREAK) == 0;
+
+                        let mut point = POINT::default();
+                        let _ = GetCursorPos(&mut point);
+                        let msg = if pressed {
+                            Message::KeyDown(KeyPayload { keycode: vkey })
+                        } else {
+                            Message::KeyUp(KeyPayload { keycode: vkey })
+                        };
+                        let _ = tx.blocking_send(CaptureEvent {
+                            message: msg,
+                            abs_x: point.x,
+                            abs_y: point.y,
+                        });
+                    }
                 }
                 DispatchMessageW(&msg);
+
+                if msg_count % 10000 == 0 {
+                    tracing::info!("Message loop stats: total={}, wm_input={}", msg_count, wm_input_count);
+                }
             }
         }
         Ok(())

@@ -401,6 +401,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
+ "x11",
 ]
 
 [[package]]

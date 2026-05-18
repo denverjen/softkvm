@@ -19,7 +19,7 @@ impl EdgeDetector {
             target: FocusTarget::Server,
             server_width,
             server_height,
-            edge_size: 2,
+            edge_size: 5,
         }
     }
 

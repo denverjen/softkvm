@@ -18,6 +18,7 @@ pub async fn run(config: &Config) -> Result<()> {
     tracing::info!("Listening on {}", addr);
 
     let layout = parse_layout(&config.layout.position);
+    tracing::info!("Layout: {:?}", layout);
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -36,10 +37,10 @@ fn parse_layout(s: &str) -> LayoutPosition {
 }
 
 async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = stream.into_split();
 
-    let (hello_buf, client_screen) = read_hello(reader).await?;
-    let _ = hello_buf;
+    let (client_screen, remaining_reader) = read_hello(reader).await?;
+    reader = remaining_reader;
 
     let (screen_w, screen_h) = get_screen_size();
 
@@ -60,38 +61,118 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
     let (capture_tx, mut capture_rx) = mpsc::channel::<CaptureEvent>(4096);
     capture::start_capture(capture_tx)?;
 
-    let mut edge_detector = EdgeDetector::new(screen_w as i32, screen_h as i32);
-    let mut writer = writer;
+    let (leave_tx, mut leave_rx) = mpsc::channel::<Edge>(4);
 
-    while let Some(event) = capture_rx.recv().await {
-        match edge_detector.target {
-            FocusTarget::Server => {
-                if let Message::MouseMove(_) = &event.message {
-                    let edge = edge_detector.check(event.abs_x, event.abs_y, &layout);
-                    if let Some(edge) = edge {
-                        tracing::info!("Edge detected: {:?}, switching to client", edge);
-                        let enter_msg = Message::EdgeEnter(EdgeEnterPayload {
-                            edge,
-                            position: event.abs_y as u16,
-                        });
-                        let _ = send_message(&mut writer, &enter_msg).await;
-                        continue;
+    let edge_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
+        EdgeDetector::new(screen_w as i32, screen_h as i32)
+    ));
+
+    let mut writer = writer;
+    let mut last_edge: Option<Edge> = None;
+    let mut last_edge_y: i32 = 0;
+    let mut event_count: u64 = 0;
+
+    let mut reader_buf = BytesMut::with_capacity(4096);
+    let mut read_buf = [0u8; 4096];
+
+    loop {
+        tokio::select! {
+            Some(event) = capture_rx.recv() => {
+                event_count += 1;
+                let target = edge_detector.lock().await.target;
+
+                match target {
+                    FocusTarget::Server => {
+                        let is_mouse_move = matches!(&event.message, Message::MouseMove(_));
+                        if is_mouse_move {
+                            let edge = edge_detector.lock().await.check(event.abs_x, event.abs_y, &layout);
+                            if let Some(edge) = edge {
+                                last_edge = Some(edge);
+                                last_edge_y = event.abs_y;
+                                tracing::info!(
+                                    "Edge detected at ({}, {}): {:?}, switching to client",
+                                    event.abs_x, event.abs_y, edge
+                                );
+                                let enter_msg = Message::EdgeEnter(EdgeEnterPayload {
+                                    edge,
+                                    position: event.abs_y as u16,
+                                });
+                                if let Err(e) = send_message(&mut writer, &enter_msg).await {
+                                    tracing::error!("Failed to send EdgeEnter: {}", e);
+                                }
+                                continue;
+                            }
+                        }
+
+                        if event_count % 2000 == 0 {
+                            tracing::info!(
+                                "Server mode: {} events, cursor ({}, {})",
+                                event_count, event.abs_x, event.abs_y
+                            );
+                        }
+                    }
+                    FocusTarget::Client => {
+                        if let Err(e) = send_message(&mut writer, &event.message).await {
+                            tracing::error!("Failed to forward event: {}", e);
+                            edge_detector.lock().await.return_to_server();
+                            break;
+                        }
+
+                        if let Some(edge) = last_edge {
+                            pin_cursor_at_edge(edge, last_edge_y, screen_w as i32, screen_h as i32);
+                        }
+
+                        if event_count % 2000 == 0 {
+                            tracing::info!("Client mode: {} events forwarded", event_count);
+                        }
                     }
                 }
             }
-            FocusTarget::Client => {
-                let _ = send_message(&mut writer, &event.message).await;
+            Some(_edge) = leave_rx.recv() => {
+                tracing::info!("EdgeLeave received from client, switching back to server");
+                edge_detector.lock().await.return_to_server();
+                last_edge = None;
+                let _ = send_message(&mut writer, &Message::EdgeLeave(EdgeLeavePayload {
+                    edge: Edge::Left,
+                })).await;
+            }
+            result = reader.readable() => {
+                if let Ok(()) = result {
+                    match reader.try_read(&mut read_buf) {
+                        Ok(0) => {
+                            tracing::info!("Client disconnected");
+                            break;
+                        }
+                        Ok(n) => {
+                            reader_buf.extend_from_slice(&read_buf[..n]);
+                            while let Some(msg) = serialize::decode(&mut reader_buf)? {
+                                if let Message::EdgeLeave(p) = msg {
+                                    tracing::info!("Client sent EdgeLeave: edge={:?}", p.edge);
+                                    let _ = leave_tx.send(p.edge).await;
+                                }
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => {
+                            tracing::warn!("Client read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            else => {
+                break;
             }
         }
     }
 
-    tracing::info!("Capture loop ended, client handler exiting");
+    tracing::info!("Client handler exiting");
     Ok(())
 }
 
 async fn read_hello(
-    reader: tokio::net::tcp::OwnedReadHalf,
-) -> Result<(BytesMut, ScreenInfo)> {
+    mut reader: tokio::net::tcp::OwnedReadHalf,
+) -> Result<(ScreenInfo, tokio::net::tcp::OwnedReadHalf)> {
     let mut buf = BytesMut::with_capacity(4096);
     let mut read_buf = [0u8; 4096];
 
@@ -105,7 +186,8 @@ async fn read_hello(
                 buf.extend_from_slice(&read_buf[..n]);
                 while let Some(msg) = serialize::decode(&mut buf)? {
                     if let Message::Hello(p) = msg {
-                        return Ok((buf, p.screen));
+                        tracing::info!("Received Hello from client: {}x{}", p.screen.width, p.screen.height);
+                        return Ok((p.screen, reader));
                     }
                 }
             }
@@ -128,9 +210,25 @@ async fn send_message(
 }
 
 #[cfg(target_os = "linux")]
+fn pin_cursor_at_edge(_edge: Edge, _y: i32, _screen_w: i32, _screen_h: i32) {}
+
+#[cfg(target_os = "windows")]
+fn pin_cursor_at_edge(edge: Edge, y: i32, screen_w: i32, screen_h: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
+    let (x, y) = match edge {
+        Edge::Right => (screen_w - 1, y.clamp(0, screen_h - 1)),
+        Edge::Left => (0, y.clamp(0, screen_h - 1)),
+        Edge::Bottom => (0, screen_h - 1),
+        Edge::Top => (0, 0),
+    };
+    unsafe {
+        let _ = SetCursorPos(x, y);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn get_screen_size() -> (u32, u32) {
     use x11::xlib::{XDefaultScreenOfDisplay, XOpenDisplay};
-
     unsafe {
         let display = XOpenDisplay(std::ptr::null());
         if display.is_null() {
