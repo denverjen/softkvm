@@ -75,6 +75,9 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
     let cooldown_duration = std::time::Duration::from_millis(300);
     let mut virtual_x: i32 = 0;
     let mut virtual_y: i32 = 0;
+    let mut virtual_moved_away: bool = false;
+    let virtual_away_threshold: i32 = 30;
+    let virtual_edge_size: i32 = 5;
 
     let mut reader_buf = BytesMut::with_capacity(4096);
     let mut read_buf = [0u8; 4096];
@@ -97,6 +100,7 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                                     last_edge_y = event.abs_y;
                                     crate::capture::set_block_mouse(true);
                                     cooldown_until = None;
+                                    virtual_moved_away = false;
                                     virtual_x = match edge {
                                         Edge::Right => 0,
                                         Edge::Left => client_screen.width as i32 - 1,
@@ -135,6 +139,7 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                         }
                     }
                     FocusTarget::Client => {
+                        let is_mouse_move = matches!(&event.message, Message::MouseMove(_));
                         let msg = match &event.message {
                             Message::MouseMove(_) => {
                                 virtual_x += event.dx;
@@ -155,12 +160,50 @@ async fn handle_client(stream: TcpStream, layout: LayoutPosition) -> Result<()> 
                             break;
                         }
 
-                        if let Some(edge) = last_edge {
-                            pin_cursor_at_edge(edge, last_edge_y, screen_w as i32, screen_h as i32);
+                        if is_mouse_move {
+                            if let Some(edge) = last_edge {
+                                pin_cursor_at_edge(edge, last_edge_y, screen_w as i32, screen_h as i32);
+
+                                if !virtual_moved_away {
+                                    let far = match edge {
+                                        Edge::Right => virtual_x >= virtual_away_threshold,
+                                        Edge::Left => virtual_x <= client_screen.width as i32 - virtual_away_threshold,
+                                        Edge::Bottom => virtual_y >= virtual_away_threshold,
+                                        Edge::Top => virtual_y <= client_screen.height as i32 - virtual_away_threshold,
+                                    };
+                                    if far {
+                                        virtual_moved_away = true;
+                                    }
+                                }
+                                if virtual_moved_away {
+                                    let at_edge = match edge {
+                                        Edge::Right => virtual_x <= virtual_edge_size,
+                                        Edge::Left => virtual_x >= client_screen.width as i32 - virtual_edge_size,
+                                        Edge::Bottom => virtual_y <= virtual_edge_size,
+                                        Edge::Top => virtual_y >= client_screen.height as i32 - virtual_edge_size,
+                                    };
+                                    if at_edge {
+                                        tracing::info!(
+                                            "Virtual cursor at ({}, {}) hit return edge, switching back to server",
+                                            virtual_x, virtual_y
+                                        );
+                                        edge_detector.lock().await.return_to_server();
+                                        last_edge = None;
+                                        virtual_moved_away = false;
+                                        crate::capture::set_block_mouse(false);
+                                        warp_cursor_inward(screen_w as i32, screen_h as i32);
+                                        cooldown_until = Some(tokio::time::Instant::now() + cooldown_duration);
+                                        let _ = send_message(&mut writer, &Message::EdgeLeave(EdgeLeavePayload {
+                                            edge: Edge::Left,
+                                        })).await;
+                                        continue;
+                                    }
+                                }
+                            }
                         }
 
                         if event_count % 2000 == 0 {
-                            tracing::info!("Client mode: {} events forwarded", event_count);
+                            tracing::info!("Client mode: {} events forwarded, virtual ({}, {})", event_count, virtual_x, virtual_y);
                         }
                     }
                 }
