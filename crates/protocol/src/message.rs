@@ -79,7 +79,7 @@ pub struct HelloAckPayload {
     pub layout: LayoutPosition,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LayoutPosition {
     LeftRight,
     RightLeft,
